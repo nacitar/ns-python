@@ -3,7 +3,7 @@
 import subprocess
 import sys
 
-IS_PY2 = sys.version_info[0] == 2
+IS_PY2 = (sys.version_info[0] == 2)
 if IS_PY2:
     def is_string(obj):
         return isinstance(obj, basestring)
