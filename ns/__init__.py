@@ -1,1 +1,3 @@
-from lang_util import *
+#!/usr/bin/env python3
+from . import util
+from . import platform
