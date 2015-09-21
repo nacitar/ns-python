@@ -10,17 +10,17 @@ def id():
     """ Returns the current platform. """
     name = _sys.platform
     if name.startswith('linux'):
-        return Platform.OS.LINUX
+        return OS.LINUX
     elif name.startswith('win'):
-        return Platform.OS.WINDOWS
+        return OS.WINDOWS
     elif name.startswith('darwin'):
-        return Platform.OS.OSX
+        return OS.OSX
     return None
 
 def bits():
     """ Determines the number of bits for this platform. """
     arch = _platform.machine()
-    if arch in ['AMD64', 'x86_64', '64bit']:
+    if arch in ['x86_64', 'AMD64', '64bit']:
         return 64
     if arch in ['x86', 'i386', '32bit']:
         return 32

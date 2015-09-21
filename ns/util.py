@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
 
-import subprocess as _subprocess
-import platform
-
 def listize(obj):
     if isinstance(obj, tuple) or isinstance(obj, list):
         return list(obj)
