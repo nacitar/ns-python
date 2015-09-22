@@ -8,9 +8,10 @@ import copy
 import subprocess
 import logging
 
-logger = logging.getLogger(__name_)
+logger = logging.getLogger(__name__)
 
 class Command(Enum):
+    PREPEND = '-I'  # really, insert, but not supporting position yet
     APPEND = '-A'
     CHECK = '-C'
     DELETE = '-D'
@@ -22,7 +23,8 @@ class Command(Enum):
 
 class State(Enum):
     NEW = 'NEW'
-    EXISTING = 'ESTABLISHED,RELATED'
+    ESTABLISHED = 'ESTABLISHED'
+    RELATED = 'RELATED'
 
 class Target(Enum):
     ACCEPT = 'ACCEPT'
@@ -59,57 +61,23 @@ class RuleError(Exception):
     pass
 
 class Rule(object):
-    def __init__(self,
-            command = None,
-            table = None,
-            chain =  None,
-            protocol = None,
-            icmpType = None,
-            state = None,
-            mark = None,
-            packetInterface = None,
-            packetSource = None,
-            packetDestination = None,
-            packetPort = None,
-            outputInterface = None,
-            target = None,
-            targetAddress = None,
-            targetPort = None,
-            targetMark = None):
-        self.command = command
-        self.table = table
-        self.chain = chain
+    _KEYS = ['command', 'table', 'chain', 'protocol', 'icmpType', 'state',
+            'mark', 'packetInterface', 'packetSource', 'packetDestination',
+            'packetPort', 'outputInterface', 'target', 'targetAddress',
+            'targetPort', 'targetMark']
 
-        # Matching the packet protocol (required if ports are referenced)
-        self.protocol = protocol
-        # Matching the icmp type (if protocol is ICMP)
-        self.icmpType = icmpType
-        # Matching the connection state for the packet
-        self.state = state
-        # Matching a mark value on the packet
-        self.mark = mark
-
-        # Interface the packet arrived on
-        self.packetInterface = packetInterface
-        # Matching where the packet came from
-        self.packetSource = packetSource
-        # Matching where the packet was heading
-        self.packetDestination = packetDestination
-        # Matching the packet's port
-        self.packetPort = packetPort
-
-        # The output interface for the packet
-        self.outputInterface = outputInterface
-        # What to do with this packet: Accept, Drop, Redirect to a host
-        self.target = target
-        self.targetAddress = targetAddress
-        self.targetPort = targetPort
-        self.targetMark = targetMark
+    def __init__(self, **kwargs):
+        # Get all defaults of None
+        values = dict.fromkeys(self.__class__._KEYS)
+        # Merge in specified overrides
+        values.update(kwargs)
+        # Actually set the attributes
+        self.update(**values)
 
     def update(self, **kwargs):
-        for key in kwargs:
-            if hasattr(self, key) and not callable(getattr(self, key)):
-                setattr(self, key, kwargs[key])
+        for key, value in kwargs.items():
+            if key in self.__class__._KEYS:
+                setattr(self, key, value)
             else:
                 logger.error('Invalid key: %s', key)
                 raise RuleError()
@@ -130,11 +98,11 @@ class Rule(object):
         target_required = True
         table_required = True
 
-        if self.command not in [Command.APPEND, Command.CHECK, Command.DELETE]:
+        if self.command not in [Command.APPEND, Command.PREPEND,
+                Command.CHECK, Command.DELETE]:
             has_jump_flag = False
             if self.command == Command.NEW_CHAIN:
                 target_required = False
-                table_required = False
             elif self.command != Command.POLICY:
                 chain_required = False
                 target_required = False
@@ -183,7 +151,13 @@ class Rule(object):
         if self.state:
             # state is deprecated
             #result.extend(['-m', 'state', '--state', self.state.value])
-            result.extend(['-m', 'conntrack', '--ctstate', self.state.value])
+            try:
+                # Support a list of states
+                value = ','.join([element.value for element in self.state])
+            except:
+                # Support a single state
+                value = self.state.value
+            result.extend(['-m', 'conntrack', '--ctstate', value])
 
         if self.mark:
             result.extend(['-m', 'mark', '--mark', str(self.mark)])

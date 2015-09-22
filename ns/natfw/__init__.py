@@ -1,14 +1,30 @@
 #!/usr/bin/env python3
 
+# TODO: rename rule!
+# TODO: hide stderr
+# TODO: allow multiple initialize calls without wiping rules
+
 # IP_NF_TARGET_REDIRECT
 import sys
 import logging
+from enum import Enum
 
 from . import iptables
 
 import subprocess
 
 logger = logging.getLogger(__name__)
+
+# Set and match just the flag, ignoring other bits
+_OPEN_PORT_BIT = (1 << 16)
+_OPEN_PORT_FLAG = '0x%08X/0x%08X' % (
+        _OPEN_PORT_BIT, _OPEN_PORT_BIT)
+
+class InternalChain(Enum):
+    FIREWALL_CONFIG = 'firewall_config'
+    FIREWALL_INCOMING = 'firewall_incoming'
+    NAT_INCOMING = 'nat_incoming'
+    NAT_OUTGOING = 'nat_outgoing'
 
 # Loads modules
 def modprobe(module, check = True):
@@ -29,7 +45,7 @@ def ModuleError(Exception):
 
 # Loads all required modules, raising exceptions otherwise
 # ModuleError or CalledProcessError
-def initialize():
+def load_modules():
     # Load required modules
     for module in ['ip_tables',
             'nf_conntrack', 'nf_conntrack_ftp', 'nf_conntrack_irc',
@@ -61,169 +77,167 @@ def initialize():
     #if sysctl('-w', 'net.ipv4.ip_dynaddr=1') != 0:
     #    raise RuntimeError('Failed to enable net.ipv4.ip_dynaddr in kernel.')
 
+def initialize(lan, net):
+    rule = iptables.Rule(command = iptables.Command.NEW_CHAIN)
 
-class Router(object):
-    def __init__(self, lan, net, lo = 'lo', open_port_flag = (1 << 16)):
-        self._LAN = lan
-        self._NET = net
-        self._LO = lo
-        # Set and match just the flag, ignoring other bits
-        self._OPEN_PORT_FLAG = '0x%08X/0x%08X' % (
-                open_port_flag, open_port_flag)
+    # Create FIREWALL_CONFIG
+    rule.update(table = iptables.Table.MANGLE,
+            chain = InternalChain.FIREWALL_CONFIG).apply()
+    rule.update(table = iptables.Table.NAT).apply()
+    # Create FIREWALL_INCOMING
+    rule.update(table = iptables.Table.FILTER,
+            chain = InternalChain.FIREWALL_INCOMING).apply()
+    # Create NAT_OUTGOING
+    rule.update(table = iptables.Table.FILTER,
+            chain = InternalChain.NAT_OUTGOING).apply()
+    rule.update(table = iptables.Table.NAT).apply()
+    # Create NAT_INCOMING
+    rule.update(table = iptables.Table.FILTER,
+            chain = InternalChain.NAT_INCOMING).apply()
 
-        # Load modules, check kernel settings, ...
-        initialize()
+    # FIREWALL: Accept open ports
+    iptables.Rule(table = iptables.Table.FILTER,
+        chain = InternalChain.FIREWALL_INCOMING,
+        command = iptables.Command.APPEND,
+        mark = _OPEN_PORT_FLAG,
+        target = iptables.Target.ACCEPT).apply()
 
-    def open_port(self, protocol, packetPort, targetPort = None):
-        if targetPort is None:
-            targetPort = packetPort
+    # NAT: Accept established connections
+    iptables.Rule(table = iptables.Table.FILTER,
+        chain = InternalChain.NAT_INCOMING,
+        command = iptables.Command.APPEND,
+        state = [iptables.State.ESTABLISHED, iptables.State.RELATED],
+        target = iptables.Target.ACCEPT).apply()
 
-        # A base rule
-        preRule = Rule(table = Table.FILTER, chain = Chain.PREROUTING,
-                command = Command.APPEND, packetInterface = self._NET,
-                protocol = protocol, packetPort = packetPort)
+    # NAT: Forward LAN to NET
+    iptables.Rule(table = iptables.Table.FILTER,
+            chain = InternalChain.NAT_OUTGOING,
+            command = iptables.Command.APPEND,
+            packetInterface = lan,
+            outputInterface = net,
+            target = iptables.Target.ACCEPT).apply()
 
-        # Mark this packet as one we want open
-        preRule.copy(table = Table.MANGLE, target = Target.MARK,
-                targetMark = self._OPEN_PORT_FLAG).apply()
+    # NAT: If outgoing to NET, masquerade as coming from this machine
+    iptables.Rule(table = iptables.Table.NAT,
+            chain = InternalChain.NAT_OUTGOING,
+            command = iptables.Command.APPEND,
+            outputInterface = net,
+            target = iptables.Target.MASQUERADE).apply()
 
-        if packetPort != targetPort:
-            # Redirect to the desired internal port
-            preRule.copy(table = Table.NAT, target = Target.REDIRECT,
-                    targetPort = targetPort).apply()
-        return
+def _apply_if(rule, state):
+    result = rule.copy(command = iptables.Command.CHECK).apply(check = False)
+    if (result == 0) == state:
+        rule.apply()
 
-    def forward_port(self, protocol, packetPort, targetAddress,
-            targetPort = None):
-        if targetPort is None:
-            targetPort = packetPort
-        # DNAT the packet to the proper recipient
-        iptables.Rule(
+def enable_nat(enabled = True):
+    if enabled:
+        command = iptables.Command.PREPEND
+    else:
+        command = iptables.Command.DELETE
+    # FORWARD (FILTER) and POSTROUTING (NAT) connect to NAT_OUTGOING
+    rule = iptables.Rule(command = command,
+            target = InternalChain.NAT_OUTGOING)
+    _apply_if(rule.copy(table = iptables.Table.FILTER,
+            chain = iptables.Chain.FORWARD), not enabled)
+    _apply_if(rule.copy(table = iptables.Table.NAT,
+            chain = iptables.Chain.POSTROUTING), not enabled)
+
+    # INPUT (FILTER) connects to NAT_INCOMING
+    _apply_if(iptables.Rule(table = iptables.Table.FILTER,
+            chain = iptables.Chain.INPUT,
+            command = command,
+            target = InternalChain.NAT_INCOMING), not enabled)
+
+
+def enable_firewall(enabled = True):
+    if enabled:
+        command = iptables.Command.PREPEND
+    else:
+        command = iptables.Command.DELETE
+    # PREROUTING (NAT/MANGLE) connects to FIREWALL_CONFIG
+    rule = iptables.Rule(chain = iptables.Chain.PREROUTING,
+            command = command,
+            target = InternalChain.FIREWALL_CONFIG)
+    _apply_if(rule.copy(table = iptables.Table.MANGLE), not enabled)
+    _apply_if(rule.copy(table = iptables.Table.NAT), not enabled)
+
+    # INPUT (FILTER) connects to FIREWALL_INCOMING
+    _apply_if(iptables.Rule(table = iptables.Table.FILTER,
+            chain = iptables.Chain.INPUT,
+            command = command,
+            target = InternalChain.FIREWALL_INCOMING), not enabled)
+
+def open_port(packetInterface, protocol, packetPort, targetPort = None):
+    if targetPort is None:
+        targetPort = packetPort
+
+    # PREROUTING rules
+    preRule = iptables.Rule(
+            chain = InternalChain.FIREWALL_CONFIG,
+            command = iptables.Command.APPEND,
+            packetInterface = packetInterface,
+            protocol = protocol,
+            packetPort = packetPort)
+
+    # Mark this packet as one we want open
+    preRule.copy(
+            table = iptables.Table.MANGLE,
+            target = iptables.Target.MARK,
+            targetMark = _OPEN_PORT_FLAG).apply()
+
+    if packetPort != targetPort:
+        # Redirect to the desired internal port
+        preRule.copy(
                 table = iptables.Table.NAT,
-                chain = iptables.Chain.PREROUTING,
-                command = iptables.Command.APPEND,
-                packetInterface = self._NET,
-                protocol = protocol,
-                packetPort = packetPort,
-                target = iptables.Target.DNAT,
-                targetAddress = targetAddress,
+                target = iptables.Target.REDIRECT,
                 targetPort = targetPort).apply()
-        return
+    return
 
-    def allow_ping(self):
-        # Just like open_port, but for ICMP ECHO_REQUEST packets
-        iptables.Rule(
-                table = iptables.Table.MANGLE,
-                chain = iptables.Chain.PREROUTING,
-                command = iptables.Command.APPEND,
-                packetInterface = self._NET,
-                protocol = iptables.Protocol.ICMP,
-                icmpType = iptables.ICMP.ECHO_REQUEST,
-                target = iptables.Target.MARK,
-                targetMark = self._OPEN_PORT_FLAG).apply()
+def forward_port(packetInterface, protocol, packetPort, targetAddress,
+        targetPort = None):
+    if targetPort is None:
+        targetPort = packetPort
+    # DNAT the packet to the proper recipient
+    iptables.Rule(
+            table = iptables.Table.NAT,
+            chain = InternalChain.FIREWALL_CONFIG,
+            command = iptables.Command.APPEND,
+            packetInterface = packetInterface,
+            protocol = protocol,
+            packetPort = packetPort,
+            target = iptables.Target.DNAT,
+            targetAddress = targetAddress,
+            targetPort = targetPort).apply()
+    return
 
-    def set_policy(self, open = False):
-        target = (open ? iptables.Target.ACCEPT : iptables.Target.DROP)
-        # Set default policy for input packets
-        iptables.Rule(
-                table = iptables.Table.FILTER,
-                chain = iptables.Chain.INPUT,
-                command = iptables.Command.POLICY,
-                target = target).apply()
+def allow_ping(packetInterface):
+    # Just like open_port, but for ICMP ECHO_REQUEST packets
+    iptables.Rule(
+            table = iptables.Table.MANGLE,
+            chain = InternalChain.FIREWALL_CONFIG,
+            command = iptables.Command.APPEND,
+            packetInterface = packetInterface,
+            protocol = iptables.Protocol.ICMP,
+            icmpType = iptables.ICMP.ECHO_REQUEST,
+            target = iptables.Target.MARK,
+            targetMark = _OPEN_PORT_FLAG).apply()
 
-    def open(self):
-        self.set_policy(open = True)
+def set_policy(open = False):
+    target = iptables.Target.ACCEPT if open else iptables.Target.DROP
+    # Set default policy for input packets
+    iptables.Rule(
+            table = iptables.Table.FILTER,
+            chain = iptables.Chain.INPUT,
+            command = iptables.Command.POLICY,
+            target = target).apply()
 
-    def close(self):
-        self.set_policy(open = False)
+def open():
+    set_policy(open = True)
 
-    def reset(self):
-        # Clear everything.
-        iptables.clear()
-
-        #
-        # FORWARD CHAIN RULES
-        #
-
-        # DEFAULT MUST BE ACCEPT (I think)
-
-        rule = iptables.Rule(
-                table = iptables.Table.FILTER,
-                chain = iptables.Chain.FORWARD,
-                command = iptables.Command.APPEND,
-                target = iptables.Target.ACCEPT)
-
-        # LAN: Forward to NET
-        rule.packetInterface, rule.outputInterface = self._LAN, self._NET
-        rule.apply()
-
-        # NET: Forward to LAN
-        rule.packetInterface, rule.outputInterface = self._NET, self._LAN
-        rule.apply()
-
-        #
-        # INPUT CHAIN RULES
-        #
-
-        # Default policy is not set here; open() and close() control it.
-
-        # ALL: Allow all established connections
-        #inputRule.copy(state = State.EXISTING).apply()
-        iptables.Rule(
-                table = iptables.Table.FILTER,
-                chain = iptables.Chain.INPUT,
-                command = iptables.Command.APPEND,
-                state = iptables.State.EXISTING,
-                target = iptables.Target.ACCEPT).apply()
-
-        # LO: Allow all new connections
-        #inputRule.copy(packetInterface = self._LO, state = State.NEW).apply()
-        iptables.Rule(
-                table = iptables.Table.FILTER,
-                chain = iptables.Chain.INPUT,
-                command = iptables.Command.APPEND,
-                packetInterface = self._LO,
-                state = iptables.State.NEW,
-                target = iptables.Target.ACCEPT).apply()
+def close():
+    set_policy(open = False)
 
 
-        # LAN: Allow all new connections
-        #inputRule.copy(packetInterface = self._LAN, state = State.NEW).apply()
-        iptables.Rule(
-                table = iptables.Table.FILTER,
-                chain = iptables.Chain.INPUT,
-                command = iptables.Command.APPEND,
-                packetInterface = self._LAN,
-                state = iptables.State.NEW,
-                target = iptables.Target.ACCEPT).apply()
-
-        # NET: Allow only connections with the open-port-flag set
-        #inputRule.copy(packetInterface = self._NET, state = State.NEW,
-        #        mark = self._OPEN_PORT_FLAG)).apply()
-        iptables.Rule(
-                table = iptables.Table.FILTER,
-                chain = iptables.Chain.INPUT,
-                command = iptables.Command.APPEND,
-                packetInterface = self._NET,
-                state = iptables.State.NEW,
-                mark = self._OPEN_PORT_FLAG,
-                target = iptables.Target.ACCEPT).apply()
-
-        #
-        # POSTROUTING CHAIN RULES
-        #
-
-        # DEFAULT MUST BE ACCEPT
-
-        # NET: If the connection is outgoing to NET, masquerade it as your own
-        #postRule.copy(outputInterface = self._NET, target = Target.MASQUERADE).apply()
-        iptables.Rule(
-                table = iptables.Table.NAT,
-                chain = iptables.Chain.POSTROUTING,
-                command = iptables.Command.APPEND,
-                outputInterface = self._NET,
-                target = iptables.Target.MASQUERADE).apply()
-
-
-        return 0
-
+def clear():
+    iptables.clear()
+    return 0
