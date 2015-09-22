@@ -76,42 +76,40 @@ class Rule(object):
             targetAddress = None,
             targetPort = None,
             targetMark = None):
-        self._command = command
-        self._table = table
-        self._chain = chain
+        self.command = command
+        self.table = table
+        self.chain = chain
 
         # Matching the packet protocol (required if ports are referenced)
-        self._protocol = protocol
+        self.protocol = protocol
         # Matching the icmp type (if protocol is ICMP)
-        self._icmpType = icmpType
+        self.icmpType = icmpType
         # Matching the connection state for the packet
-        self._state = state
+        self.state = state
         # Matching a mark value on the packet
-        self._mark = mark
+        self.mark = mark
 
         # Interface the packet arrived on
-        self._packetInterface = packetInterface
+        self.packetInterface = packetInterface
         # Matching where the packet came from
-        self._packetSource = packetSource
+        self.packetSource = packetSource
         # Matching where the packet was heading
-        self._packetDestination = packetDestination
+        self.packetDestination = packetDestination
         # Matching the packet's port
-        self._packetPort = packetPort
+        self.packetPort = packetPort
 
         # The output interface for the packet
-        self._outputInterface = outputInterface
+        self.outputInterface = outputInterface
         # What to do with this packet: Accept, Drop, Redirect to a host
-        self._target = target
-        self._targetAddress = targetAddress
-        self._targetPort = targetPort
-        self._targetMark = targetMark
+        self.target = target
+        self.targetAddress = targetAddress
+        self.targetPort = targetPort
+        self.targetMark = targetMark
 
     def update(self, **kwargs):
         for key in kwargs:
-            # TODO: hack
-            attr_key = '_' + key
-            if hasattr(self, attr_key):
-                setattr(self, attr_key, kwargs[key])
+            if hasattr(self, key) and not callable(getattr(self, key)):
+                setattr(self, key, kwargs[key])
             else:
                 logger.error('Invalid key: %s', key)
                 raise RuleError()
@@ -121,7 +119,7 @@ class Rule(object):
         return copy.copy(self).update(**kwargs)
 
     def args(self):
-        if not self._command:
+        if not self.command:
             logger.error('Must specify command.')
             raise RuleError()
 
@@ -132,76 +130,76 @@ class Rule(object):
         target_required = True
         table_required = True
 
-        if self._command not in [Command.APPEND, Command.CHECK, Command.DELETE]:
+        if self.command not in [Command.APPEND, Command.CHECK, Command.DELETE]:
             has_jump_flag = False
-            if self._command == Command.NEW_CHAIN:
+            if self.command == Command.NEW_CHAIN:
                 target_required = False
                 table_required = False
-            elif self._command != Command.POLICY:
+            elif self.command != Command.POLICY:
                 chain_required = False
                 target_required = False
 
-        if self._table:
-            result.extend(['-t', self._table.value])
+        if self.table:
+            result.extend(['-t', self.table.value])
         elif table_required:
             logger.error('Must specify table.')
             raise RuleError()
 
-        result.append(self._command.value)
+        result.append(self.command.value)
 
-        if self._chain:
-            result.append(self._chain.value)
+        if self.chain:
+            result.append(self.chain.value)
         elif chain_required:
-            logger.error('Chain required for %s command.', self._command.name)
+            logger.error('Chain required for %s command.', self.command.name)
             raise RuleError()
 
-        if self._packetInterface:
-            result.extend(['-i', self._packetInterface])
+        if self.packetInterface:
+            result.extend(['-i', self.packetInterface])
 
-        if self._protocol:
-            result.extend(['-p', self._protocol.value])
+        if self.protocol:
+            result.extend(['-p', self.protocol.value])
 
-        if self._icmpType:
-            if self._protocol != Protocol.ICMP:
+        if self.icmpType:
+            if self.protocol != Protocol.ICMP:
                 logger.error('Cannot specify ICMP type if not ICMP.')
                 raise RuleError()
-            result.extend(['--icmp-type', self._icmpType.value])
+            result.extend(['--icmp-type', self.icmpType.value])
 
-        if self._packetSource:
-            result.extend(['-s', self._packetSource])
+        if self.packetSource:
+            result.extend(['-s', self.packetSource])
 
-        if self._packetDestination:
-            result.extend(['-d', self._packetDestination])
+        if self.packetDestination:
+            result.extend(['-d', self.packetDestination])
 
-        if self._packetPort:
-            if not self._protocol:
+        if self.packetPort:
+            if not self.protocol:
                 logger.error('Port specification required protocol.')
                 raise RuleError()
-            result.extend(['--dport', str(self._packetPort)])
+            result.extend(['--dport', str(self.packetPort)])
 
-        if self._outputInterface:
-            result.extend(['-o', self._outputInterface])
+        if self.outputInterface:
+            result.extend(['-o', self.outputInterface])
 
-        if self._state:
+        if self.state:
             # state is deprecated
-            #result.extend(['-m', 'state', '--state', self._state.value])
-            result.extend(['-m', 'conntrack', '--ctstate', self._state.value])
+            #result.extend(['-m', 'state', '--state', self.state.value])
+            result.extend(['-m', 'conntrack', '--ctstate', self.state.value])
 
-        if self._mark:
-            result.extend(['-m', 'mark', '--mark', str(self._mark)])
+        if self.mark:
+            result.extend(['-m', 'mark', '--mark', str(self.mark)])
 
         # ACCEPT/DROP/MASQUERADE = NO DATA
         # DNAT = IP [PORT]
         # REDIRECT = PORT
         # SNAT = IP
-        if self._target:
+        if self.target:
             if not target_required:
                 logger.error('Command does not accept a target.')
                 raise RuleError()
 
             if has_jump_flag:
                 result.append('-j')
-            result.append(self._target.value)
+            result.append(self.target.value)
 
             # TODO: these must NOT be there if not required too, name?
             address_required = False
@@ -209,49 +207,49 @@ class Rule(object):
             #
             port_allowed = False
             port_required = False
-            if self._target == Target.SNAT:
+            if self.target == Target.SNAT:
                 result.append('--to-source')
                 address_required = True
-            elif self._target == Target.DNAT:
+            elif self.target == Target.DNAT:
                 result.append('--to-destination')
                 address_required = True
                 port_allowed = True
-            elif self._target == Target.REDIRECT:
+            elif self.target == Target.REDIRECT:
                 result.append('--to-ports')
                 port_allowed = True
                 port_required = True
-            elif self._target == Target.MARK:
+            elif self.target == Target.MARK:
                 result.append('--set-mark')
                 mark_required = True
 
             value = ''
-            if self._targetAddress:
+            if self.targetAddress:
                 if not address_required:
                     logger.error('Target cannot use an address.')
                     raise RuleError()
-                value += self._targetAddress
+                value += self.targetAddress
             elif address_required:
                 logger.error('Target requires an address.')
                 raise RuleError()
 
-            if self._targetPort:
+            if self.targetPort:
                 if not port_allowed:
                     logger.error('Target cannot use a port.')
                     raise RuleError()
                 if value:
                     value += ':'
-                value += str(self._targetPort)
+                value += str(self.targetPort)
             elif port_required:
                 logger.error('Target requires a port.')
                 raise RuleError()
             if value:
                 result.append(value)
 
-            if self._targetMark:
+            if self.targetMark:
                 if not mark_required:
                     logger.error('Target cannot use a mark.')
                     raise RuleError()
-                result.append(str(self._targetMark))
+                result.append(str(self.targetMark))
             elif mark_required:
                 logger.error('Target requires a mark.')
                 raise RuleError()

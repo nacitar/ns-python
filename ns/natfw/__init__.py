@@ -147,23 +147,19 @@ class Router(object):
 
         # DEFAULT MUST BE ACCEPT (I think)
 
-        # LAN: Forward to NET
-        iptables.Rule(
+        rule = iptables.Rule(
                 table = iptables.Table.FILTER,
                 chain = iptables.Chain.FORWARD,
                 command = iptables.Command.APPEND,
-                packetInterface = self._LAN,
-                outputInterface = self._NET,
-                target = iptables.Target.ACCEPT).apply()
+                target = iptables.Target.ACCEPT)
+
+        # LAN: Forward to NET
+        rule.packetInterface, rule.outputInterface = self._LAN, self._NET
+        rule.apply()
 
         # NET: Forward to LAN
-        iptables.Rule(
-                table = iptables.Table.FILTER,
-                chain = iptables.Chain.FORWARD,
-                command = iptables.Command.APPEND,
-                packetInterface = self._NET,
-                outputInterface = self._LAN,
-                target = iptables.Target.ACCEPT).apply()
+        rule.packetInterface, rule.outputInterface = self._NET, self._LAN
+        rule.apply()
 
         #
         # INPUT CHAIN RULES
