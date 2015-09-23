@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 import sys
 import natfw
+import logging
 
 from natfw.iptables import Protocol
 
-import logging
 def main():
     LAN = 'enp0s8'
     NET = 'enp0s3'
@@ -13,17 +13,8 @@ def main():
     # Log everything to stdout
     logging.basicConfig(stream = sys.stdout, level = logging.DEBUG)
 
-    # Load modules (GOOD PRACTICE)
-    natfw.load_modules()
-
-    # Clear everything (REQ for first time)
-    natfw.clear()
-
-    # Initialize the custom tables (REQ for first time)
-    natfw.install(lan = LAN, net = NET)
-
-    # Enable features
-    natfw.enable()
+    # Use a simple installation
+    natfw.simple(lan = LAN, net = NET)
 
     # Allow ICMP (ping, etc...) from anywhere
     natfw.open(NET, Protocol.ICMP)
