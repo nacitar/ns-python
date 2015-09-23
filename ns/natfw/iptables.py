@@ -11,7 +11,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Command(Enum):
-    PREPEND = '-I'  # really, insert, but not supporting position yet
+    INSERT = '-I'
     APPEND = '-A'
     CHECK = '-C'
     DELETE = '-D'
@@ -61,10 +61,10 @@ class RuleError(Exception):
     pass
 
 class Rule(object):
-    _KEYS = ['command', 'table', 'chain', 'protocol', 'icmpType', 'state',
-            'mark', 'packetInterface', 'packetSource', 'packetDestination',
-            'packetPort', 'outputInterface', 'target', 'targetAddress',
-            'targetPort', 'targetMark']
+    _KEYS = ['command', 'index', 'table', 'chain', 'protocol', 'icmpType',
+            'state', 'mark', 'packetInterface', 'packetSource',
+            'packetDestination', 'packetPort', 'outputInterface', 'target',
+            'targetAddress', 'targetPort', 'targetMark']
 
     def __init__(self, **kwargs):
         # Get all defaults of None
@@ -98,7 +98,7 @@ class Rule(object):
         target_required = True
         table_required = True
 
-        if self.command not in [Command.APPEND, Command.PREPEND,
+        if self.command not in [Command.APPEND, Command.INSERT,
                 Command.CHECK, Command.DELETE]:
             has_jump_flag = False
             if self.command == Command.NEW_CHAIN:
@@ -114,6 +114,12 @@ class Rule(object):
             raise RuleError()
 
         result.append(self.command.value)
+
+        if self.index:
+            if self.command != Command.INSERT:
+                logger.error('index allowed only for INSERT command.')
+                raise RuleError()
+            result.append(str(self.index))
 
         if self.chain:
             result.append(self.chain.value)
@@ -240,9 +246,14 @@ class Rule(object):
         #        stdout = subprocess.DEVNULL, stderr = subprocess.PIPE,
         #        check = check)
         #return child.returncode
-        run = (subprocess.check_call if check else subprocess.call)
+        if check:
+            run = subprocess.check_call
+            stderr = None
+        else:
+            run = subprocess.call
+            stderr = subprocess.DEVNULL
         returncode = run(args, stdin = subprocess.DEVNULL,
-                stdout = subprocess.DEVNULL)
+                stdout = subprocess.DEVNULL, stderr = stderr)
         return returncode
 
 # Clears all rules and zeroes counters for a given chain
