@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 
+# TODO: get accurate module list
 import sys
 import logging
+import subprocess
 from enum import Enum
 
 from . import iptables
 
-import subprocess
-
 logger = logging.getLogger(__name__)
 
 # Set and match just the flag, ignoring other bits
-_OPEN_PORT_BIT = (1 << 16)
+_OPEN_PORT_BIT = (1 << 31)
 _OPEN_PORT_FLAG = '0x%08X/0x%08X' % (
         _OPEN_PORT_BIT, _OPEN_PORT_BIT)
 
@@ -77,6 +77,46 @@ def load_modules():
     #if sysctl('-w', 'net.ipv4.ip_dynaddr=1') != 0:
     #    raise RuntimeError('Failed to enable net.ipv4.ip_dynaddr in kernel.')
 
+def enable(firewall = None, nat = None, config = None):
+    if firewall is not None:
+        if firewall:
+            target = iptables.Target.ACCEPT
+        else:
+            target = iptables.Target.DROP
+        iptables.Rule(
+                table = iptables.Table.FILTER,
+                chain = iptables.Chain.INPUT,
+                command = iptables.Command.POLICY,
+                target = target).apply()
+
+    if nat is not None:
+        if nat:
+            command = iptables.Command.DELETE
+        else:
+            command = iptables.Command.INSERT
+
+        rule = iptables.Rule(command = command,
+                chain = InternalChain.NAT_OUTGOING,
+                target = iptables.Target.RETURN)
+        _apply_if(rule.update(table = iptables.Table.NAT), nat)
+        _apply_if(rule.update(table = iptables.Table.FILTER), nat)
+        _apply_if(rule.update(chain = InternalChain.NAT_INCOMING), nat)
+
+    if config is not None:
+        if config:
+            command = iptables.Command.DELETE
+        else:
+            command = iptables.Command.INSERT
+
+        rule = iptables.Rule(command = command,
+                chain = InternalChain.USER_CONFIG,
+                target = iptables.Target.RETURN)
+        _apply_if(rule.update(table = iptables.Table.MANGLE), config)
+        _apply_if(rule.update(table = iptables.Table.NAT), config)
+
+        _apply_if(rule.update(table = iptables.Table.FILTER,
+                chain = InternalChain.USER_INCOMING), config)
+
 
 # If the tables already exist, this will fail.
 def install(lan, net):
@@ -90,7 +130,7 @@ def install(lan, net):
     rule.update(table = iptables.Table.FILTER,
             chain = InternalChain.USER_INCOMING).apply()
     # Disable config
-    enable_config(False)
+    enable(config = False)
 
     # Create NAT_OUTGOING
     rule.update(table = iptables.Table.FILTER,
@@ -100,7 +140,7 @@ def install(lan, net):
     rule.update(table = iptables.Table.FILTER,
             chain = InternalChain.NAT_INCOMING).apply()
     # Disable NAT
-    enable_nat(False)
+    enable(nat = False)
 
     # FIREWALL: Accept open ports
     iptables.Rule(table = iptables.Table.FILTER,
@@ -151,7 +191,7 @@ def install(lan, net):
             target = InternalChain.USER_CONFIG)
     rule.copy(table = iptables.Table.MANGLE).apply()
     rule.copy(table = iptables.Table.NAT).apply()
-    
+
     # INSTALL: Connect FILTER(INPUT) to USER_INCOMING
     iptables.Rule(table = iptables.Table.FILTER,
             chain = iptables.Chain.INPUT,
@@ -164,57 +204,12 @@ def _apply_if(rule, state):
     if (result == 0) == state:
         rule.apply()
 
-def enable_firewall(enabled = True):
-    if enabled:
-        target = iptables.Target.ACCEPT
-    else:
-        target = iptables.Target.DROP
-
-    iptables.Rule(
-            table = iptables.Table.FILTER,
-            chain = iptables.Chain.INPUT,
-            command = iptables.Command.POLICY,
-            target = target).apply()
-
-def enable_nat(enabled = True):
-    if enabled:
-        command = iptables.Command.DELETE
-    else:
-        command = iptables.Command.INSERT
-
-    rule = iptables.Rule(command = command,
-            chain = InternalChain.NAT_OUTGOING,
-            target = iptables.Target.RETURN) 
-    _apply_if(rule.update(table = iptables.Table.NAT), enabled)
-    _apply_if(rule.update(table = iptables.Table.FILTER), enabled)
-    _apply_if(rule.update(chain = InternalChain.NAT_INCOMING), enabled)
-
-def enable_config(enabled = True):
-    if enabled:
-        command = iptables.Command.DELETE
-    else:
-        command = iptables.Command.INSERT
-
-    rule = iptables.Rule(command = command,
-            chain = InternalChain.USER_CONFIG,
-            target = iptables.Target.RETURN) 
-    _apply_if(rule.update(table = iptables.Table.MANGLE), enabled)
-    _apply_if(rule.update(table = iptables.Table.NAT), enabled)
-
-    _apply_if(rule.update(table = iptables.Table.FILTER,
-            chain = InternalChain.USER_INCOMING), enabled)
-
-# Enables all features
-def enable(enabled = True):
-    enable_firewall(enabled)
-    enable_nat(enabled)
-    enable_config(enabled)
 
 def open(packetInterface = None, protocol = None, packetPort = None,
         targetPort = None, icmpType = None):
     if targetPort is None:
         targetPort = packetPort
-    
+
     rule = iptables.Rule(
             chain = InternalChain.USER_CONFIG,
             command = iptables.Command.APPEND,
@@ -254,6 +249,21 @@ def forward(packetInterface, protocol, packetPort, targetAddress,
             targetPort = targetPort).apply()
     return
 
+# Clears all rules
 def clear():
     iptables.clear()
     return 0
+
+def enable_all():
+    enable(firewall = True, nat = True, config = True)
+
+def simple(lan, net):
+    # Load modules, in case they haven't been loaded since boot
+    load_modules()
+    # Wipe all existing rules, making sure it isn't installed yet
+    clear()
+    # Install
+    install(lan = lan, net = net)
+    # Enable all features
+    enable_all()
+

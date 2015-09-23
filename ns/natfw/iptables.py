@@ -63,8 +63,9 @@ class RuleError(Exception):
 class Rule(object):
     _KEYS = ['command', 'index', 'table', 'chain', 'protocol', 'icmpType',
             'state', 'mark', 'packetInterface', 'packetSource',
-            'packetDestination', 'packetPort', 'outputInterface', 'target',
-            'targetAddress', 'targetPort', 'targetMark']
+            'packetDestination', 'packetPort', 'packetSourcePort',
+            'outputInterface', 'target', 'targetAddress', 'targetPort',
+            'targetMark']
 
     def __init__(self, **kwargs):
         # Get all defaults of None
@@ -145,11 +146,14 @@ class Rule(object):
         if self.packetDestination:
             result.extend(['-d', self.packetDestination])
 
-        if self.packetPort:
+        if self.packetPort or self.packetSourcePort:
             if not self.protocol:
                 logger.error('Port specification required protocol.')
                 raise RuleError()
-            result.extend(['--dport', str(self.packetPort)])
+            if self.packetPort:
+                result.extend(['--dport', str(self.packetPort)])
+            if self.packetSourcePort:
+                result.extend(['--sport', str(self.packetSourcePort)])
 
         if self.outputInterface:
             result.extend(['-o', self.outputInterface])
