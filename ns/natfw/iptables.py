@@ -57,15 +57,40 @@ class ICMP(Enum):
     ECHO_REQUEST = 'echo-request'
     ECHO_REPLY = 'echo-reply'
 
+class TCP(Enum):
+    SYN = 'SYN'
+    ACK = 'ACK'
+    FIN = 'FIN'
+    RST = 'RST'
+    URG = 'URG'
+    PSH = 'PSH'
+    NONE = 'NONE'
+    ALL = 'ALL'
+
 class RuleError(Exception):
     pass
+
+# TODO:THIS DOES NOT BELONG HERE; IT IS COPIED FROM UTIL
+def listize(obj):
+    """ If obj is iterable and not a string, returns a new list with the same
+    contents.  Otherwise, returns a new list with obj as its only element.
+    """
+    if not isinstance(obj, str):
+        try:
+            return list(obj)
+        except:
+            pass
+    return [obj]
+# TODO: don't use this listize!
+def _join_enum_flags(flags):
+    return ','.join([element.value for element in listize(flags)])
 
 class Rule(object):
     _KEYS = ['command', 'index', 'table', 'chain', 'protocol', 'icmpType',
             'state', 'mark', 'packetInterface', 'packetSource',
             'packetDestination', 'packetPort', 'packetSourcePort',
-            'outputInterface', 'target', 'targetAddress', 'targetPort',
-            'targetMark']
+            'packetLength', 'tcpFlagMask', 'tcpFlags', 'outputInterface',
+            'target', 'targetAddress', 'targetPort', 'targetMark']
 
     def __init__(self, **kwargs):
         # Get all defaults of None
@@ -134,6 +159,22 @@ class Rule(object):
         if self.protocol:
             result.extend(['-p', self.protocol.value])
 
+        if self.tcpFlagMask or self.tcpFlags:
+            if self.protocol != Protocol.TCP:
+                logger.error('Cannot specify tcpFlagMask/tcpFlags if not TCP.')
+                raise RuleError()
+
+            tcpFlagMask = self.tcpFlagMask
+            if not tcpFlagMask:
+                tcpFlagMask = self.tcpFlags
+
+            tcpFlags = self.tcpFlags
+            if not tcpFlags:
+                tcpFlags = TCP.NONE
+
+            result.extend(['--tcp-flags', _join_enum_flags(tcpFlagMask),
+                    _join_enum_flags(tcpFlags)])
+
         if self.icmpType:
             if self.protocol != Protocol.ICMP:
                 logger.error('Cannot specify ICMP type if not ICMP.')
@@ -155,19 +196,15 @@ class Rule(object):
             if self.packetSourcePort:
                 result.extend(['--sport', str(self.packetSourcePort)])
 
+        if self.packetLength is not None:  # could be 0
+            result.extend(['-m', 'length', '--length', str(self.packetLength)])
+
         if self.outputInterface:
             result.extend(['-o', self.outputInterface])
 
         if self.state:
-            # state is deprecated
-            #result.extend(['-m', 'state', '--state', self.state.value])
-            try:
-                # Support a list of states
-                value = ','.join([element.value for element in self.state])
-            except:
-                # Support a single state
-                value = self.state.value
-            result.extend(['-m', 'conntrack', '--ctstate', value])
+            result.extend(['-m', 'conntrack', '--ctstate',
+                    _join_enum_flags(self.state)])
 
         if self.mark:
             result.extend(['-m', 'mark', '--mark', str(self.mark)])
